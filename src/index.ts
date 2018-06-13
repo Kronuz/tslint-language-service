@@ -101,7 +101,7 @@ function init(modules: { typescript: typeof ts_module }) {
             let diagnostic: ts.Diagnostic = {
                 file: file,
                 start: problem.getStartPosition().getPosition(),
-                length: problem.getEndPosition().getPosition() - problem.getStartPosition().getPosition(),
+                length: problem.getEndPosition().getPosition() - problem.getStartPosition().getPosition() || 1,
                 messageText: message,
                 category: category,
                 source: 'tslint',
