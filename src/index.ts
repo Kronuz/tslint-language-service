@@ -1,7 +1,10 @@
 import * as ts_module from "../node_modules/typescript/lib/tsserverlibrary";
 import * as tslint from 'tslint';
 import * as path from 'path';
+import * as server from 'vscode-languageserver';
 import * as mockRequire from 'mock-require';
+
+const Module = require("module");
 
 // Settings for the plugin section in tsconfig.json
 interface Settings {
@@ -14,6 +17,32 @@ interface Settings {
 }
 
 const TSLINT_ERROR_CODE = 100000;
+
+let globalPackageManagerPath: Map<string, string> = new Map();  // map stores undefined values to represent failed resolutions
+
+function getGlobalPackageManagerPath(packageManager?: string): string | undefined {
+    if (!globalPackageManagerPath.has(packageManager)) {
+        let path: string | undefined;
+        if (packageManager === 'npm') {
+            path = server.Files.resolveGlobalNodePath();
+        } else if (packageManager === 'yarn') {
+            path = server.Files.resolveGlobalYarnPath();
+        } else {
+            path = server.Files.resolveGlobalNodePath() || server.Files.resolveGlobalYarnPath();
+        }
+        globalPackageManagerPath.set(packageManager, path!);
+    }
+    return globalPackageManagerPath.get(packageManager);
+}
+
+function resolve(name: string, extraLookupPaths: string[]) {
+    const lookupPaths = extraLookupPaths.concat((<any>module).paths ? (<any>module).paths.concat(Module.globalPaths) : Module.globalPaths)
+    const result = Module._findPath(name, lookupPaths);
+    if (!result) {
+        throw new Error(`Cannot find module '${name}'`);
+    }
+    return result;
+}
 
 function init(modules: { typescript: typeof ts_module }) {
     const ts = modules.typescript;
@@ -67,7 +96,24 @@ function init(modules: { typescript: typeof ts_module }) {
         if(config.mockTypeScriptVersion) {
             mockRequire('typescript', ts);
         }
-        const tslint = require('tslint')
+
+        function loadLibrary(name: string, fileName: string) {
+            let lookupPaths = [
+                getGlobalPackageManagerPath(),
+            ];
+            let directory = fileName;
+            let next = path.resolve(fileName);
+            do {
+                directory = next;
+                next = path.dirname(directory);
+                lookupPaths.push(path.join(next, 'node_modules'))
+            } while(next !== directory);
+
+            let resolved = resolve(name, lookupPaths);
+            let library = require(resolved);
+            info.project.projectService.logger.info(`${name} library loaded from: ${resolved}`);
+            return library;
+        }
 
         // Set up decorator
         const proxy = Object.create(null) as ts.LanguageService;
@@ -379,7 +425,8 @@ function init(modules: { typescript: typeof ts_module }) {
                     // TODO the types of the Program provided by tsserver libary are not compatible with the one provided by typescript
                     // casting away the type
                     let options: tslint.ILinterOptions = { fix: false };
-                    let linter = new tslint.Linter(options, <any>oldLS.getProgram());
+                    const library = loadLibrary('tslint', fileName);
+                    let linter = new library.Linter(options, <any>oldLS.getProgram());
                     linter.lint(fileName, "", configuration);
                     result = linter.getResult();
                 } catch (err) {
